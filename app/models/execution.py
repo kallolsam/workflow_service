@@ -1,5 +1,5 @@
 from datetime import datetime, timezone
-from sqlalchemy import Integer, String, DateTime, ForeignKey
+from sqlalchemy import Integer, String, DateTime, ForeignKey, JSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from typing import List, Optional
 import uuid
@@ -25,6 +25,7 @@ class Execution(Base):
         nullable=False
     )
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    final_context: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
 
     # Relationships
     workflow: Mapped["Workflow"] = relationship("Workflow", back_populates="executions")

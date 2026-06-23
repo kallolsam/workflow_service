@@ -51,6 +51,7 @@ CREATE TABLE `executions` (
   `current_step` int NOT NULL,
   `started_at` datetime NOT NULL,
   `completed_at` datetime DEFAULT NULL,
+  `final_context` json DEFAULT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `ix_executions_execution_id` (`execution_id`),
   KEY `workflow_id` (`workflow_id`),

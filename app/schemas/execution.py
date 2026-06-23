@@ -21,3 +21,4 @@ class ExecutionHistoryResponse(CamelModel):
     execution_id: str
     status: str
     steps: List[ExecutionStepHistoryResponse]
+    final_context: Optional[Dict[str, Any]] = None

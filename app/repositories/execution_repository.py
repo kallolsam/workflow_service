@@ -36,11 +36,10 @@ class ExecutionRepository:
         return await self.get_by_execution_id(execution.execution_id)
 
     async def update(self, execution: Execution) -> Execution:
-        """Update an existing execution record."""
+        """Update an existing execution record in the database."""
         self.db.add(execution)
         await self.db.commit()
-        # Return refreshed execution with steps
-        return await self.get_by_execution_id(execution.execution_id)
+        return execution
 
     async def create_step(
         self,

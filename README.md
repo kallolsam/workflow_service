@@ -165,21 +165,53 @@ The database consists of 4 main tables:
 
 ---
 
-## 5. Assumptions
+## 5. Required Questions
+
+### Q1: How does the system handle state transitions and guarantee sequential execution?
+State transitions are managed sequentially inside the asynchronous background runner (`ExecutorService.run_execution`). When a workflow execution is triggered, the executor loads the static workflow steps sorted by `step_order`. It iterates through the steps one by one:
+1. The execution's `current_step` attribute is updated to the step's sequence number and saved.
+2. A new `ExecutionStep` record is created in the database with status `running`.
+3. The step handler corresponding to the step name is loaded from the registry and executed with the accumulated context and step input.
+4. Upon successful completion, the `ExecutionStep` is marked `completed` and the output is stored.
+5. If a step handler fails or is not found, the `ExecutionStep` is marked `failed`, all subsequent steps in the workflow are explicitly created with status `skipped`, and the overall `Execution` is marked `failed`.
+6. Once all steps successfully complete, the overall `Execution` is marked `completed`.
+By running the steps inside a single loop in order of `step_order`, sequential execution is guaranteed.
+
+### Q2: What are the key trade-offs in using an in-process background task runner vs. a message queue?
+- **In-process Task Runner (FastAPI BackgroundTasks):**
+  - *Pros:* Extremely simple to implement, zero external operational dependencies (no Redis, RabbitMQ, or Celery worker fleet required), low overhead, and fast setup.
+  - *Cons:* If the FastAPI server crashes or restarts, all currently executing workflows are lost from memory and will remain in a "running" status in the database indefinitely. There is no automatic retry capability or rate limiting, and background tasks share the CPU/memory resources of the web server, which can lead to resource starvation under heavy load.
+- **Distributed Message Queue (e.g., Celery, Temporal, AWS SQS):**
+  - *Pros:* High reliability and resilience. Tasks are stored in a broker (Redis/RabbitMQ/Temporal DB) and can survive server restarts. It supports automatic retries, rate limiting, and horizontal scaling of worker nodes.
+  - *Cons:* Significantly higher operational complexity, additional infrastructure to maintain (broker and workers), and message serialization overhead.
+
+### Q3: How does the database schema support tracking execution step output and overall execution state?
+The database schema tracks progress and state through two primary tables:
+- **`executions`**: Tracks the global status of a workflow execution (`pending`, `running`, `completed`, `failed`), the `current_step` index, and timestamps for tracking execution duration. Crucially, it also features a `final_context` JSON column which persists the accumulated variables and outputs from all steps upon completion or failure.
+- **`execution_steps`**: Has a foreign key referencing `executions.id`. It tracks the individual status of each step (`running`, `completed`, `failed`, `skipped`), its `step_name`, start/completion timestamps, and contains an `output_json` field where the specific output returned by that step handler is stored as a JSON object.
+
+### Q4: How does the application manage database connections and concurrency in asynchronous background execution?
+The application uses SQLAlchemy's asynchronous extension (`sqlalchemy.ext.asyncio`) with the `aiomysql` driver to handle database operations non-blockingly:
+- **Connection Lifecycle:** The background runner (`ExecutorService.run_execution`) is instantiated with a session maker (`async_sessionmaker[AsyncSession]`). When the background task begins, it opens its own independent database session using `async with self.session_maker() as db:`. This ensures that the background task has a dedicated database connection, avoiding connection sharing or race conditions with active API requests.
+- **Concurrency:** FastAPI executes background tasks within the running asyncio event loop. Since the database queries and step handlers (like the `delay` handler using `await asyncio.sleep()`) are fully asynchronous, they yield control back to the event loop, allowing the server to handle concurrent API requests and execute multiple workflows concurrently without blocking.
+
+---
+
+## 6. Assumptions
 
 - **Sequential Execution**: Steps execute sequentially in ascending order of `step_order`.
 - **Immutability**: Workflow definitions and steps are immutable once registered.
 - **Security**: No authentication or authorization is required for the API (as per minimalist assignment guidelines).
 - **Deployment**: Deployment is optimized for a single-node setup using Python asyncio for background concurrency.
 
-## 6. Tradeoffs
+## 7. Tradeoffs
 
 - **MySQL over Distributed DB**: Used MySQL to satisfy constraints and keep setup simple, although a distributed DB (like DynamoDB or CockroachDB) would be preferred for high availability and partition tolerance.
 - **In-process Concurrency**: Used FastAPI `BackgroundTasks` instead of a distributed message broker (like Redis/Celery). If the web server crashes or restarts, running workflows could remain in a "running" status indefinitely.
 - **No Retries**: If a step handler fails, it immediately terminates the workflow without a retry policy.
 - **Sequential Executions Only**: No Support for Directed Acyclic Graphs (DAGs) or parallel execution pathways.
 
-## 7. Future Improvements
+## 8. Future Improvements
 
 - **Retry Policies**: Support automatic step retries with exponential backoffs.
 - **Workflow Versioning**: Allow upgrading workflow step layouts while maintaining old executions on old schemas.
@@ -189,7 +221,19 @@ The database consists of 4 main tables:
 
 ---
 
-## 8. Local Setup Instructions
+## 9. One-Command Startup (Docker Compose)
+
+The easiest way to start the service along with its database is using Docker Compose:
+```bash
+docker compose up --build
+```
+This spins up:
+1. A **MySQL** container (`db`) pre-configured with the database `workflow_db`.
+2. A **FastAPI** container (`app`) that waits for the database to be healthy, creates the database tables automatically on startup, and exposes the service on port `8000`.
+
+---
+
+## 10. Local Setup Instructions
 
 ### Prerequisites
 - Python 3.12+
@@ -230,7 +274,28 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
 ---
 
-## 9. Example Curl Commands
+## 11. Testing
+
+### Run Automated Test Suite
+The automated test suite uses `pytest` and `httpx`. To run the tests, execute:
+```bash
+PYTHONPATH=. ./venv/bin/pytest tests/test_workflow.py
+```
+This runs 4 tests verifying:
+- `/health` check.
+- **Happy Path Workflow**: step-by-step execution including `transform`, `delay` (verifying status is `running` mid-flight), and verifying `finalContext`.
+- **Failing Step & Skipping Trailing Steps**: verifying that when a step fails, remaining steps are set to `skipped` and the accumulated context is successfully saved.
+- **Invalid step creation validation**.
+
+### Run Smoke Test Script
+To run the end-to-end smoke test which starts the server locally, runs the progress scenario (with a 3-second delay), polls mid-flight, and checks history/finalContext:
+```bash
+./run.sh
+```
+
+---
+
+## 12. Example Curl Commands
 
 ### Create a Workflow
 ```bash
@@ -243,6 +308,21 @@ curl -X POST http://127.0.0.1:8000/api/v1/workflows \
            "name": "validate",
            "input": {
              "contractId": "123"
+           }
+         },
+         {
+           "name": "transform",
+           "input": {
+             "set": {
+               "approved": true,
+               "reviewer": "Alice"
+             }
+           }
+         },
+         {
+           "name": "delay",
+           "input": {
+             "seconds": 3
            }
          },
          {

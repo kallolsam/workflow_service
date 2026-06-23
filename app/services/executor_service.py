@@ -77,8 +77,19 @@ class ExecutorService:
                     db_step.completed_at = datetime.now(timezone.utc)
                     await db.commit()
 
+                    # Mark trailing steps as skipped
+                    for remaining_step in steps[idx + 1:]:
+                        await exec_repo.create_step(
+                            execution_id=execution.id,
+                            step_name=remaining_step.name,
+                            status="skipped",
+                            started_at=datetime.now(timezone.utc),
+                            completed_at=datetime.now(timezone.utc)
+                        )
+
                     # Mark workflow execution as failed
                     execution.status = "failed"
+                    execution.final_context = context
                     execution.completed_at = datetime.now(timezone.utc)
                     await exec_repo.update(execution)
                     return
@@ -107,13 +118,25 @@ class ExecutorService:
                     db_step.completed_at = datetime.now(timezone.utc)
                     await db.commit()
 
+                    # Mark trailing steps as skipped
+                    for remaining_step in steps[idx + 1:]:
+                        await exec_repo.create_step(
+                            execution_id=execution.id,
+                            step_name=remaining_step.name,
+                            status="skipped",
+                            started_at=datetime.now(timezone.utc),
+                            completed_at=datetime.now(timezone.utc)
+                        )
+
                     # Mark workflow execution as failed
                     execution.status = "failed"
+                    execution.final_context = context
                     execution.completed_at = datetime.now(timezone.utc)
                     await exec_repo.update(execution)
                     return
 
             # Mark execution as completed when all steps finish successfully
             execution.status = "completed"
+            execution.final_context = context
             execution.completed_at = datetime.now(timezone.utc)
             await exec_repo.update(execution)
